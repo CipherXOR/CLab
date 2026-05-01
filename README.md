@@ -1,4 +1,4 @@
-# CLab (Culling Lab)
+# CLab
 
 &gt; Bringing **Hardware Occlusion Culling (HOC)** to Minecraft entity and block rendering optimization.
 
