@@ -1,0 +1,285 @@
+package me.cipher.clab.culling.entity;
+
+import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.mojang.blaze3d.vertex.VertexBuffer;
+import it.unimi.dsi.fastutil.ints.Int2BooleanOpenHashMap;
+import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
+import me.cipher.clab.Constants;
+import net.minecraft.client.Camera;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.phys.AABB;
+import org.lwjgl.opengl.GL33C;
+
+import java.util.ArrayDeque;
+import java.util.Deque;
+
+public class HardwareOcclusionCuller implements IEntityCuller {
+
+    public static final String ID = "hardware_occlusion";
+    private static final int GL_QUERY_RESULT_AVAILABLE = 0x8867;
+    private static final int GL_QUERY_RESULT = 0x8866;
+    private static final int GL_SAMPLES_PASSED = 0x8914;
+    private static final int VISIBILITY_STALE_FRAMES = 5;
+    private static final int INITIAL_QUERY_POOL_SIZE = 1024;
+
+    private boolean enabled = true;
+    private int frameCounter = 0;
+
+    private final Deque<Integer> availableQueries = new ArrayDeque<>();
+    private final Int2IntOpenHashMap pendingQueries = new Int2IntOpenHashMap();
+    private final Int2BooleanOpenHashMap lastFrameVisible = new Int2BooleanOpenHashMap();
+    private final Int2IntOpenHashMap lastFrameUpdated = new Int2IntOpenHashMap();
+
+    private boolean poolInitialized = false;
+    private int currentPoolSize = 0;
+    private VertexBuffer unitCubeVbo;
+
+    @Override
+    public String getId() {
+        return ID;
+    }
+
+    @Override
+    public boolean isEnabled() {
+        return this.enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public void ensurePool() {
+        if (poolInitialized) {
+            return;
+        }
+        RenderSystem.assertOnRenderThread();
+        growPool();
+        poolInitialized = true;
+    }
+
+    private void growPool() {
+        RenderSystem.assertOnRenderThread();
+        for (int i = 0; i < HardwareOcclusionCuller.INITIAL_QUERY_POOL_SIZE; i++) {
+            availableQueries.add(GL33C.glGenQueries());
+        }
+        currentPoolSize += HardwareOcclusionCuller.INITIAL_QUERY_POOL_SIZE;
+    }
+
+    private void ensureMesh() {
+        if (unitCubeVbo != null) return;
+        RenderSystem.assertOnRenderThread();
+
+        com.mojang.blaze3d.vertex.Tesselator tesselator = com.mojang.blaze3d.vertex.Tesselator.getInstance();
+        com.mojang.blaze3d.vertex.BufferBuilder buffer = tesselator.begin(
+                com.mojang.blaze3d.vertex.VertexFormat.Mode.QUADS,
+                com.mojang.blaze3d.vertex.DefaultVertexFormat.POSITION
+        );
+
+        buffer.addVertex(0, 0, 0); buffer.addVertex(1, 0, 0); buffer.addVertex(1, 0, 1); buffer.addVertex(0, 0, 1);
+        buffer.addVertex(0, 1, 1); buffer.addVertex(1, 1, 1); buffer.addVertex(1, 1, 0); buffer.addVertex(0, 1, 0);
+        buffer.addVertex(0, 0, 0); buffer.addVertex(0, 1, 0); buffer.addVertex(1, 1, 0); buffer.addVertex(1, 0, 0);
+        buffer.addVertex(1, 0, 1); buffer.addVertex(1, 1, 1); buffer.addVertex(0, 1, 1); buffer.addVertex(0, 0, 1);
+        buffer.addVertex(0, 0, 1); buffer.addVertex(0, 1, 1); buffer.addVertex(0, 1, 0); buffer.addVertex(0, 0, 0);
+        buffer.addVertex(1, 0, 0); buffer.addVertex(1, 1, 0); buffer.addVertex(1, 1, 1); buffer.addVertex(1, 0, 1);
+
+        com.mojang.blaze3d.vertex.MeshData mesh = buffer.build();
+        if (mesh != null) {
+            unitCubeVbo = new com.mojang.blaze3d.vertex.VertexBuffer(com.mojang.blaze3d.vertex.VertexBuffer.Usage.STATIC);
+            unitCubeVbo.bind();
+            unitCubeVbo.upload(mesh);
+            com.mojang.blaze3d.vertex.VertexBuffer.unbind();
+        }
+    }
+
+    public void processPendingQueries() {
+        if (!enabled || !poolInitialized) {
+            return;
+        }
+        RenderSystem.assertOnRenderThread();
+        frameCounter++;
+
+        it.unimi.dsi.fastutil.ints.Int2IntMap.Entry entry;
+        it.unimi.dsi.fastutil.objects.ObjectIterator<it.unimi.dsi.fastutil.ints.Int2IntMap.Entry> it = pendingQueries.int2IntEntrySet().iterator();
+        while (it.hasNext()) {
+            entry = it.next();
+            int entityId = entry.getIntKey();
+            int queryId = entry.getIntValue();
+
+            if (GL33C.glGetQueryObjecti(queryId, GL_QUERY_RESULT_AVAILABLE) == 1) {
+                int samplesPassed = GL33C.glGetQueryObjecti(queryId, GL_QUERY_RESULT);
+                boolean visible = samplesPassed > 0;
+                lastFrameVisible.put(entityId, visible);
+                lastFrameUpdated.put(entityId, frameCounter);
+                availableQueries.add(queryId);
+                it.remove();
+            } else if (frameCounter - lastFrameUpdated.getOrDefault(entityId, frameCounter) > VISIBILITY_STALE_FRAMES * 2) {
+                availableQueries.add(queryId);
+                it.remove();
+                lastFrameVisible.remove(entityId);
+                lastFrameUpdated.remove(entityId);
+            }
+        }
+    }
+
+    private boolean queryBatchActive = false;
+
+    public void beginQueryBatch() {
+        if (!enabled || !poolInitialized) {
+            return;
+        }
+        RenderSystem.assertOnRenderThread();
+        queryBatchActive = true;
+
+        GlStateManager._enableDepthTest();
+        GlStateManager._depthMask(false);
+        GlStateManager._colorMask(false, false, false, false);
+        GlStateManager._disableBlend();
+        GlStateManager._disableCull();
+        RenderSystem.setShader(GameRenderer::getPositionShader);
+    }
+
+    public void endQueryBatch() {
+        if (!queryBatchActive) {
+            return;
+        }
+        queryBatchActive = false;
+
+        GlStateManager._depthMask(true);
+        GlStateManager._colorMask(true, true, true, true);
+        GlStateManager._enableBlend();
+        GlStateManager._enableCull();
+    }
+
+    public void submitQuery(Entity entity) {
+        if (!enabled || !poolInitialized) {
+            return;
+        }
+        RenderSystem.assertOnRenderThread();
+
+        if (entity instanceof Player) {
+            return;
+        }
+        if (entity.isCurrentlyGlowing()) {
+            return;
+        }
+        if (entity.isPassenger()) {
+            return;
+        }
+
+        int entityId = entity.getId();
+        if (pendingQueries.containsKey(entityId)) {
+            return;
+        }
+
+        if (availableQueries.isEmpty()) {
+            growPool();
+            Constants.LOG.info("[HOC] Query pool grown to {}", currentPoolSize);
+        }
+
+        Integer queryIdObj = availableQueries.poll();
+        if (queryIdObj == null) {
+            return;
+        }
+        int queryId = queryIdObj;
+
+        AABB aabb = entity.getBoundingBoxForCulling();
+        if (aabb.hasNaN()) {
+            aabb = entity.getBoundingBox();
+        }
+
+        GL33C.glBeginQuery(GL_SAMPLES_PASSED, queryId);
+        renderBoundingBoxOcclusion(aabb);
+        GL33C.glEndQuery(GL_SAMPLES_PASSED);
+
+        pendingQueries.put(entityId, queryId);
+    }
+
+    private void renderBoundingBoxOcclusion(AABB aabb) {
+        ensureMesh();
+        if (unitCubeVbo == null) return;
+
+        Camera camera = Minecraft.getInstance().gameRenderer.getMainCamera();
+        float tx = (float)(aabb.minX - camera.getPosition().x);
+        float ty = (float)(aabb.minY - camera.getPosition().y);
+        float tz = (float)(aabb.minZ - camera.getPosition().z);
+        float sx = (float)(aabb.maxX - aabb.minX);
+        float sy = (float)(aabb.maxY - aabb.minY);
+        float sz = (float)(aabb.maxZ - aabb.minZ);
+
+        RenderSystem.getModelViewStack().pushMatrix();
+        RenderSystem.getModelViewStack().translate(tx, ty, tz);
+        RenderSystem.getModelViewStack().scale(sx, sy, sz);
+        RenderSystem.applyModelViewMatrix();
+
+        unitCubeVbo.bind();
+        unitCubeVbo.drawWithShader(
+                RenderSystem.getModelViewMatrix(),
+                RenderSystem.getProjectionMatrix(),
+                RenderSystem.getShader()
+        );
+
+        RenderSystem.getModelViewStack().popMatrix();
+        RenderSystem.applyModelViewMatrix();
+    }
+
+    @Override
+    public boolean shouldCull(Entity entity, Camera camera) {
+        if (!enabled) {
+            return false;
+        }
+
+        if (entity instanceof Player) {
+            return false;
+        }
+        if (entity.isCurrentlyGlowing()) {
+            return false;
+        }
+        if (entity.isPassenger()) {
+            return false;
+        }
+        if (entity == camera.getEntity()) {
+            return false;
+        }
+
+        int entityId = entity.getId();
+
+        if (lastFrameVisible.containsKey(entityId)) {
+            int updated = lastFrameUpdated.getOrDefault(entityId, frameCounter);
+            if (frameCounter - updated > VISIBILITY_STALE_FRAMES) {
+                lastFrameVisible.remove(entityId);
+                lastFrameUpdated.remove(entityId);
+                return false;
+            }
+            boolean visible = lastFrameVisible.get(entityId);
+            return !visible;
+        }
+
+        return false;
+    }
+
+    public void cleanup() {
+        if (!poolInitialized) {
+            return;
+        }
+        RenderSystem.assertOnRenderThread();
+        if (unitCubeVbo != null) {
+            unitCubeVbo.close();
+            unitCubeVbo = null;
+        }
+        for (int queryId : availableQueries) {
+            GL33C.glDeleteQueries(queryId);
+        }
+        for (int queryId : pendingQueries.values()) {
+            GL33C.glDeleteQueries(queryId);
+        }
+        availableQueries.clear();
+        pendingQueries.clear();
+        lastFrameVisible.clear();
+        lastFrameUpdated.clear();
+        poolInitialized = false;
+    }
+}
