@@ -12,6 +12,7 @@ import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import org.lwjgl.opengl.GL33C;
 
 import java.util.ArrayDeque;
@@ -25,6 +26,12 @@ public class HardwareOcclusionCuller implements IEntityCuller {
     private static final int GL_SAMPLES_PASSED = 0x8914;
     private static final int VISIBILITY_STALE_FRAMES = 5;
     private static final int INITIAL_QUERY_POOL_SIZE = 1024;
+    private static final int QUERY_READ_DELAY_FRAMES = 1;
+
+    private static final double DISTANCE_NEAR_SQ = 64.0 * 64.0;      // < 64 blocks: every frame
+    private static final double DISTANCE_MID_SQ = 128.0 * 128.0;     // < 128 blocks: every 2 frames
+    private static final int FREQUENCY_MID = 2;
+    private static final int FREQUENCY_FAR = 3;                      // >= 128 blocks: every 3 frames
 
     private boolean enabled = true;
     private int frameCounter = 0;
@@ -33,6 +40,8 @@ public class HardwareOcclusionCuller implements IEntityCuller {
     private final Int2IntOpenHashMap pendingQueries = new Int2IntOpenHashMap();
     private final Int2BooleanOpenHashMap lastFrameVisible = new Int2BooleanOpenHashMap();
     private final Int2IntOpenHashMap lastFrameUpdated = new Int2IntOpenHashMap();
+    private final Int2IntOpenHashMap querySubmitFrame = new Int2IntOpenHashMap();
+    private final Int2IntOpenHashMap entityLastQueriedFrame = new Int2IntOpenHashMap();
 
     private boolean poolInitialized = false;
     private int currentPoolSize = 0;
@@ -102,6 +111,8 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         RenderSystem.assertOnRenderThread();
         frameCounter++;
 
+        int minFrame = frameCounter - QUERY_READ_DELAY_FRAMES;
+
         it.unimi.dsi.fastutil.ints.Int2IntMap.Entry entry;
         it.unimi.dsi.fastutil.objects.ObjectIterator<it.unimi.dsi.fastutil.ints.Int2IntMap.Entry> it = pendingQueries.int2IntEntrySet().iterator();
         while (it.hasNext()) {
@@ -109,15 +120,22 @@ public class HardwareOcclusionCuller implements IEntityCuller {
             int entityId = entry.getIntKey();
             int queryId = entry.getIntValue();
 
+            int submitFrame = querySubmitFrame.getOrDefault(queryId, frameCounter);
+            if (submitFrame > minFrame) {
+                continue;
+            }
+
             if (GL33C.glGetQueryObjecti(queryId, GL_QUERY_RESULT_AVAILABLE) == 1) {
                 int samplesPassed = GL33C.glGetQueryObjecti(queryId, GL_QUERY_RESULT);
                 boolean visible = samplesPassed > 0;
                 lastFrameVisible.put(entityId, visible);
                 lastFrameUpdated.put(entityId, frameCounter);
                 availableQueries.add(queryId);
+                querySubmitFrame.remove(queryId);
                 it.remove();
             } else if (frameCounter - lastFrameUpdated.getOrDefault(entityId, frameCounter) > VISIBILITY_STALE_FRAMES * 2) {
                 availableQueries.add(queryId);
+                querySubmitFrame.remove(queryId);
                 it.remove();
                 lastFrameVisible.remove(entityId);
                 lastFrameUpdated.remove(entityId);
@@ -175,6 +193,12 @@ public class HardwareOcclusionCuller implements IEntityCuller {
             return;
         }
 
+        int frequency = getQueryFrequency(entity);
+        int lastQueried = entityLastQueriedFrame.getOrDefault(entityId, -frequency);
+        if (frameCounter - lastQueried < frequency) {
+            return;
+        }
+
         if (availableQueries.isEmpty()) {
             growPool();
             Constants.LOG.info("[HOC] Query pool grown to {}", currentPoolSize);
@@ -196,6 +220,24 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         GL33C.glEndQuery(GL_SAMPLES_PASSED);
 
         pendingQueries.put(entityId, queryId);
+        querySubmitFrame.put(queryId, frameCounter);
+        entityLastQueriedFrame.put(entityId, frameCounter);
+    }
+
+    private int getQueryFrequency(Entity entity) {
+        Vec3 camPos = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
+        double dx = entity.getX() - camPos.x;
+        double dy = entity.getY() - camPos.y;
+        double dz = entity.getZ() - camPos.z;
+        double distSq = dx * dx + dy * dy + dz * dz;
+
+        if (distSq < DISTANCE_NEAR_SQ) {
+            return 1;
+        } else if (distSq < DISTANCE_MID_SQ) {
+            return FREQUENCY_MID;
+        } else {
+            return FREQUENCY_FAR;
+        }
     }
 
     private void renderBoundingBoxOcclusion(AABB aabb) {
@@ -252,6 +294,7 @@ public class HardwareOcclusionCuller implements IEntityCuller {
             if (frameCounter - updated > VISIBILITY_STALE_FRAMES) {
                 lastFrameVisible.remove(entityId);
                 lastFrameUpdated.remove(entityId);
+                entityLastQueriedFrame.remove(entityId);
                 return false;
             }
             boolean visible = lastFrameVisible.get(entityId);
@@ -280,6 +323,8 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         pendingQueries.clear();
         lastFrameVisible.clear();
         lastFrameUpdated.clear();
+        querySubmitFrame.clear();
+        entityLastQueriedFrame.clear();
         poolInitialized = false;
     }
 }
