@@ -1,5 +1,6 @@
 package me.cipher.clab.mixin;
 
+import com.mojang.blaze3d.vertex.PoseStack;
 import me.cipher.clab.ClientClass;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -7,12 +8,16 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.LightTexture;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.Slice;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
@@ -37,6 +42,7 @@ public class MixinLevelRenderer {
         CallbackInfo ci
     ) {
         ClientClass.HARDWARE_OCCLUSION_CULLER.ensurePool();
+        ClientClass.HARDWARE_OCCLUSION_BE_CULLER.ensurePool();
     }
 
     @Inject(
@@ -59,6 +65,7 @@ public class MixinLevelRenderer {
         CallbackInfo ci
     ) {
         ClientClass.HARDWARE_OCCLUSION_CULLER.processPendingQueries();
+        ClientClass.HARDWARE_OCCLUSION_BE_CULLER.processPendingQueries();
     }
 
     @Inject(
@@ -96,11 +103,60 @@ public class MixinLevelRenderer {
         }
     }
 
+    @Redirect(
+        method = "renderLevel(Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/GameRenderer;Lnet/minecraft/client/renderer/LightTexture;Lorg/joml/Matrix4f;Lorg/joml/Matrix4f;)V",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/blockentity/BlockEntityRenderDispatcher;render(Lnet/minecraft/world/level/block/entity/BlockEntity;FLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;)V",
+            ordinal = 0
+        )
+    )
+    private void redirectBlockEntityRender(
+        BlockEntityRenderDispatcher dispatcher,
+        BlockEntity blockEntity,
+        float partialTick,
+        PoseStack poseStack,
+        MultiBufferSource bufferSource
+    ) {
+        if (!ClientClass.HARDWARE_OCCLUSION_BE_CULLER.shouldCull(blockEntity, null)) {
+            dispatcher.render(blockEntity, partialTick, poseStack, bufferSource);
+            ClientClass.HARDWARE_OCCLUSION_BE_CULLER.onBlockEntityRendered(blockEntity);
+        }
+    }
+
+    @Inject(
+        method = "renderLevel(Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/GameRenderer;Lnet/minecraft/client/renderer/LightTexture;Lorg/joml/Matrix4f;Lorg/joml/Matrix4f;)V",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/MultiBufferSource$BufferSource;endBatch(Lnet/minecraft/client/renderer/RenderType;)V",
+            ordinal = 0,
+            shift = At.Shift.AFTER
+        )
+    )
+    private void afterBlockEntityRendering(
+        DeltaTracker deltaTracker,
+        boolean renderBlockOutline,
+        Camera camera,
+        GameRenderer gameRenderer,
+        LightTexture lightTexture,
+        Matrix4f frustumMatrix,
+        Matrix4f projectionMatrix,
+        CallbackInfo ci
+    ) {
+        ClientClass.HARDWARE_OCCLUSION_BE_CULLER.beginQueryBatch();
+        try {
+            ClientClass.HARDWARE_OCCLUSION_BE_CULLER.submitAllPendingQueries();
+        } finally {
+            ClientClass.HARDWARE_OCCLUSION_BE_CULLER.endQueryBatch();
+        }
+    }
+
     @Inject(
             method = "close()V",
             at = @At("RETURN")
     )
     private void onClose(CallbackInfo ci) {
         ClientClass.HARDWARE_OCCLUSION_CULLER.cleanup();
+        ClientClass.HARDWARE_OCCLUSION_BE_CULLER.cleanup();
     }
 }

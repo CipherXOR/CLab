@@ -5,6 +5,14 @@
 *.ipr
 *.iws
 
+# eclipse
+bin
+*.launch
+.settings
+.metadata
+.classpath
+.project
+
 # IntelliJ
 out/
 # mpeltonen/sbt-idea plugin
@@ -117,3 +125,5 @@ runs/
 
 # Avoid ignoring Gradle wrapper jar file (.jar files are usually ignored)
 !gradle-wrapper.jar
+
+/vscode/
