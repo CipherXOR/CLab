@@ -1,6 +1,7 @@
 package me.cipher.clab.culling.entity;
 
 import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.shaders.ProgramManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.*;
 import it.unimi.dsi.fastutil.ints.Int2BooleanOpenHashMap;
@@ -12,10 +13,12 @@ import me.cipher.clab.Constants;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.ShaderInstance;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL33C;
 
 import java.util.ArrayDeque;
@@ -166,6 +169,9 @@ public class HardwareOcclusionCuller implements IEntityCuller {
     private boolean queryBatchActive = false;
     private double cachedCamX, cachedCamY, cachedCamZ;
 
+    private ShaderInstance cachedShader;
+    private Matrix4f cachedProjMatrix;
+
     public void beginQueryBatch() {
         if (!enabled || !poolInitialized) {
             return;
@@ -183,7 +189,16 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         GlStateManager._colorMask(false, false, false, false);
         GlStateManager._disableBlend();
         GlStateManager._disableCull();
-        RenderSystem.setShader(GameRenderer::getPositionShader);
+
+        cachedShader = GameRenderer.getPositionShader();
+        cachedProjMatrix = RenderSystem.getProjectionMatrix();
+        if (cachedShader != null) {
+            if (cachedShader.PROJECTION_MATRIX != null) {
+                cachedShader.PROJECTION_MATRIX.set(cachedProjMatrix);
+                cachedShader.PROJECTION_MATRIX.upload();
+            }
+            ProgramManager.glUseProgram(cachedShader.getId());
+        }
     }
 
     public void endQueryBatch() {
@@ -191,6 +206,8 @@ public class HardwareOcclusionCuller implements IEntityCuller {
             return;
         }
         queryBatchActive = false;
+        cachedShader = null;
+        cachedProjMatrix = null;
 
         GlStateManager._depthMask(true);
         GlStateManager._colorMask(true, true, true, true);
@@ -281,12 +298,13 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         RenderSystem.getModelViewStack().scale(sx, sy, sz);
         RenderSystem.applyModelViewMatrix();
 
+        if (cachedShader != null && cachedShader.MODEL_VIEW_MATRIX != null) {
+            cachedShader.MODEL_VIEW_MATRIX.set(RenderSystem.getModelViewMatrix());
+            cachedShader.MODEL_VIEW_MATRIX.upload();
+        }
+
         unitCubeVbo.bind();
-        unitCubeVbo.drawWithShader(
-                RenderSystem.getModelViewMatrix(),
-                RenderSystem.getProjectionMatrix(),
-                RenderSystem.getShader()
-        );
+        unitCubeVbo.draw();
 
         RenderSystem.getModelViewStack().popMatrix();
         RenderSystem.applyModelViewMatrix();

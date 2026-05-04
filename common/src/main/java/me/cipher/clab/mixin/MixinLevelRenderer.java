@@ -1,6 +1,5 @@
 package me.cipher.clab.mixin;
 
-import com.mojang.blaze3d.vertex.PoseStack;
 import me.cipher.clab.ClientClass;
 import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
@@ -8,16 +7,12 @@ import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.LightTexture;
-import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.block.entity.BlockEntity;
 import org.joml.Matrix4f;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.Slice;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
@@ -100,27 +95,6 @@ public class MixinLevelRenderer {
             }
         } finally {
             ClientClass.HARDWARE_OCCLUSION_CULLER.endQueryBatch();
-        }
-    }
-
-    @Redirect(
-        method = "renderLevel(Lnet/minecraft/client/DeltaTracker;ZLnet/minecraft/client/Camera;Lnet/minecraft/client/renderer/GameRenderer;Lnet/minecraft/client/renderer/LightTexture;Lorg/joml/Matrix4f;Lorg/joml/Matrix4f;)V",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/blockentity/BlockEntityRenderDispatcher;render(Lnet/minecraft/world/level/block/entity/BlockEntity;FLcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/client/renderer/MultiBufferSource;)V",
-            ordinal = 0
-        )
-    )
-    private void redirectBlockEntityRender(
-        BlockEntityRenderDispatcher dispatcher,
-        BlockEntity blockEntity,
-        float partialTick,
-        PoseStack poseStack,
-        MultiBufferSource bufferSource
-    ) {
-        if (!ClientClass.HARDWARE_OCCLUSION_BE_CULLER.shouldCull(blockEntity, null)) {
-            dispatcher.render(blockEntity, partialTick, poseStack, bufferSource);
-            ClientClass.HARDWARE_OCCLUSION_BE_CULLER.onBlockEntityRendered(blockEntity);
         }
     }
 
