@@ -1,43 +1,46 @@
-package me.cipher.clab.culling.entity;
+package me.cipher.clab.culling.blockentity;
 
 import com.mojang.blaze3d.platform.GlStateManager;
+import com.mojang.blaze3d.shaders.ProgramManager;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.BufferBuilder;
 import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.mojang.blaze3d.vertex.Tesselator;
 import com.mojang.blaze3d.vertex.VertexBuffer;
 import com.mojang.blaze3d.vertex.VertexFormat;
-import it.unimi.dsi.fastutil.ints.Int2BooleanOpenHashMap;
-import it.unimi.dsi.fastutil.ints.Int2IntMap;
-import it.unimi.dsi.fastutil.ints.Int2IntOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
+import it.unimi.dsi.fastutil.longs.Long2IntMap;
+import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2BooleanOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import me.cipher.clab.Constants;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
-import com.mojang.blaze3d.shaders.ProgramManager;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.ShaderInstance;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import org.joml.Matrix4f;
 import org.lwjgl.opengl.GL33C;
 
-import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.Vec3;
-
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 
-public class HardwareOcclusionCuller implements IEntityCuller {
+public class HardwareOcclusionBlockEntityCuller implements IBlockEntityCuller {
 
-    public static final String ID = "hardware_occlusion";
+    public static final String ID = "hardware_occlusion_be";
     private static final int GL_QUERY_RESULT_AVAILABLE = 0x8867;
     private static final int GL_QUERY_RESULT = 0x8866;
     private static final int GL_SAMPLES_PASSED = 0x8914;
     private static final int VISIBILITY_STALE_FRAMES = 5;
     private static final int INITIAL_QUERY_POOL_SIZE = 1024;
-    private static final int QUERY_READ_DELAY_FRAMES = 1;
+    private static final int QUERY_READ_DELAY_FRAMES = 0;
 
     private static final double DISTANCE_NEAR_SQ = 64.0 * 64.0;
     private static final double DISTANCE_MID_SQ = 128.0 * 128.0;
@@ -48,24 +51,27 @@ public class HardwareOcclusionCuller implements IEntityCuller {
     private int frameCounter = 0;
 
     private final Deque<Integer> availableQueries = new ArrayDeque<>();
-    private final Int2IntOpenHashMap pendingQueries = new Int2IntOpenHashMap();
-    private final Int2BooleanOpenHashMap lastFrameVisible = new Int2BooleanOpenHashMap();
-    private final Int2IntOpenHashMap lastFrameUpdated = new Int2IntOpenHashMap();
-    private final Int2IntOpenHashMap querySubmitFrame = new Int2IntOpenHashMap();
-    private final Int2IntOpenHashMap entityLastQueriedFrame = new Int2IntOpenHashMap();
+    private final Long2IntOpenHashMap pendingQueries = new Long2IntOpenHashMap();
+    private final Long2BooleanOpenHashMap lastFrameVisible = new Long2BooleanOpenHashMap();
+    private final Long2IntOpenHashMap lastFrameUpdated = new Long2IntOpenHashMap();
+    private final Long2IntOpenHashMap querySubmitFrame = new Long2IntOpenHashMap();
+    private final Long2IntOpenHashMap beLastQueriedFrame = new Long2IntOpenHashMap();
+    private final Long2ObjectOpenHashMap<AABB> beAABBCache = new Long2ObjectOpenHashMap<>();
 
-    private final IntArrayList readyEntityIds = new IntArrayList();
+    private final LongArrayList readyBeIds = new LongArrayList();
     private final IntArrayList readyQueryIds = new IntArrayList();
 
     private boolean poolInitialized = false;
     private int currentPoolSize = 0;
     private VertexBuffer unitCubeVbo;
 
-    private boolean queryBatchActive = false;
     private double cachedCamX, cachedCamY, cachedCamZ;
+    private boolean queryBatchActive = false;
 
     private ShaderInstance cachedShader;
     private Matrix4f cachedProjMatrix;
+
+    private final ArrayList<BlockEntity> renderedBlockEntities = new ArrayList<>();
 
     @Override
     public String getId() {
@@ -92,10 +98,10 @@ public class HardwareOcclusionCuller implements IEntityCuller {
 
     private void growPool() {
         RenderSystem.assertOnRenderThread();
-        for (int i = 0; i < HardwareOcclusionCuller.INITIAL_QUERY_POOL_SIZE; i++) {
+        for (int i = 0; i < INITIAL_QUERY_POOL_SIZE; i++) {
             availableQueries.add(GL33C.glGenQueries());
         }
-        currentPoolSize += HardwareOcclusionCuller.INITIAL_QUERY_POOL_SIZE;
+        currentPoolSize += INITIAL_QUERY_POOL_SIZE;
     }
 
     private void ensureMesh() {
@@ -150,46 +156,52 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         frameCounter++;
 
         int minFrame = frameCounter - QUERY_READ_DELAY_FRAMES;
-        readyEntityIds.clear();
+        readyBeIds.clear();
         readyQueryIds.clear();
 
-        Int2IntMap.Entry entry;
-        ObjectIterator<Int2IntMap.Entry> it = pendingQueries.int2IntEntrySet().iterator();
+        Long2IntMap.Entry entry;
+        ObjectIterator<Long2IntMap.Entry> it = pendingQueries.long2IntEntrySet().iterator();
         while (it.hasNext()) {
             entry = it.next();
-            int entityId = entry.getIntKey();
+            long beId = entry.getLongKey();
             int queryId = entry.getIntValue();
 
-            int submitFrame = querySubmitFrame.getOrDefault(queryId, frameCounter);
+            int submitFrame = querySubmitFrame.getOrDefault(beId, frameCounter);
             if (submitFrame > minFrame) {
                 continue;
             }
 
-            int available = GL33C.glGetQueryObjecti(queryId, GL_QUERY_RESULT_AVAILABLE);
-            if (available == 1) {
-                readyEntityIds.add(entityId);
+            if (GL33C.glGetQueryObjecti(queryId, GL_QUERY_RESULT_AVAILABLE) == 1) {
+                readyBeIds.add(beId);
                 readyQueryIds.add(queryId);
-                querySubmitFrame.remove(queryId);
+                querySubmitFrame.remove(beId);
                 it.remove();
-            } else if (frameCounter - lastFrameUpdated.getOrDefault(entityId, frameCounter) > VISIBILITY_STALE_FRAMES * 2) {
+            } else if (frameCounter - lastFrameUpdated.getOrDefault(beId, frameCounter) > VISIBILITY_STALE_FRAMES * 2) {
                 availableQueries.add(queryId);
-                querySubmitFrame.remove(queryId);
+                querySubmitFrame.remove(beId);
                 it.remove();
-                lastFrameVisible.remove(entityId);
-                lastFrameUpdated.remove(entityId);
-                entityLastQueriedFrame.remove(entityId);
+                lastFrameVisible.remove(beId);
+                lastFrameUpdated.remove(beId);
+                beLastQueriedFrame.remove(beId);
             }
         }
 
         for (int i = 0; i < readyQueryIds.size(); i++) {
             int queryId = readyQueryIds.getInt(i);
-            int entityId = readyEntityIds.getInt(i);
+            long beId = readyBeIds.getLong(i);
             int samplesPassed = GL33C.glGetQueryObjecti(queryId, GL_QUERY_RESULT);
             boolean visible = samplesPassed > 0;
-            lastFrameVisible.put(entityId, visible);
-            lastFrameUpdated.put(entityId, frameCounter);
+            lastFrameVisible.put(beId, visible);
+            lastFrameUpdated.put(beId, frameCounter);
             availableQueries.add(queryId);
         }
+    }
+
+    public void onBlockEntityRendered(BlockEntity blockEntity) {
+        if (!enabled || !poolInitialized) {
+            return;
+        }
+        renderedBlockEntities.add(blockEntity);
     }
 
     public void beginQueryBatch() {
@@ -235,36 +247,38 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         GlStateManager._enableCull();
     }
 
-    public void submitQuery(Entity entity) {
-        if (!enabled || !poolInitialized) {
+    public void submitAllPendingQueries() {
+        if (!enabled || !poolInitialized || renderedBlockEntities.isEmpty()) {
             return;
         }
         RenderSystem.assertOnRenderThread();
 
-        if (entity instanceof Player) {
-            return;
+        for (BlockEntity blockEntity : renderedBlockEntities) {
+            submitQueryInternal(blockEntity);
         }
-        if (entity.isCurrentlyGlowing()) {
-            return;
-        }
-        if (entity.isPassenger()) {
+        renderedBlockEntities.clear();
+    }
+
+    private void submitQueryInternal(BlockEntity blockEntity) {
+        long beId = blockEntity.getBlockPos().asLong();
+        if (pendingQueries.containsKey(beId)) {
             return;
         }
 
-        int entityId = entity.getId();
-        if (pendingQueries.containsKey(entityId)) {
-            return;
+        int frequency = getQueryFrequency(blockEntity);
+        boolean wasInvisible = lastFrameVisible.containsKey(beId) && !lastFrameVisible.get(beId);
+        if (wasInvisible) {
+            frequency = 1;
         }
 
-        int frequency = getQueryFrequency(entity);
-        int lastQueried = entityLastQueriedFrame.getOrDefault(entityId, -frequency);
+        int lastQueried = beLastQueriedFrame.getOrDefault(beId, -frequency);
         if (frameCounter - lastQueried < frequency) {
             return;
         }
 
         if (availableQueries.isEmpty()) {
             growPool();
-            Constants.LOG.info("[HOC] Query pool grown to {}", currentPoolSize);
+            Constants.LOG.info("[HOC-BE] Query pool grown to {}", currentPoolSize);
         }
 
         Integer queryIdObj = availableQueries.poll();
@@ -273,24 +287,52 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         }
         int queryId = queryIdObj;
 
-        AABB aabb = entity.getBoundingBoxForCulling();
+        AABB aabb = getBlockEntityAABB(blockEntity);
         if (aabb.hasNaN()) {
-            aabb = entity.getBoundingBox();
+            availableQueries.add(queryId);
+            return;
         }
 
         GL33C.glBeginQuery(GL_SAMPLES_PASSED, queryId);
         renderBoundingBoxOcclusion(aabb);
         GL33C.glEndQuery(GL_SAMPLES_PASSED);
 
-        pendingQueries.put(entityId, queryId);
-        querySubmitFrame.put(queryId, frameCounter);
-        entityLastQueriedFrame.put(entityId, frameCounter);
+        pendingQueries.put(beId, queryId);
+        querySubmitFrame.put(beId, frameCounter);
+        beLastQueriedFrame.put(beId, frameCounter);
     }
 
-    private int getQueryFrequency(Entity entity) {
-        double dx = entity.getX() - cachedCamX;
-        double dy = entity.getY() - cachedCamY;
-        double dz = entity.getZ() - cachedCamZ;
+    private AABB getBlockEntityAABB(BlockEntity blockEntity) {
+        long beId = blockEntity.getBlockPos().asLong();
+        AABB cached = beAABBCache.get(beId);
+        if (cached != null) {
+            return cached;
+        }
+
+        BlockPos pos = blockEntity.getBlockPos();
+        var level = blockEntity.getLevel();
+        AABB aabb;
+        if (level == null) {
+            aabb = new AABB(pos);
+        } else {
+            var state = blockEntity.getBlockState();
+            VoxelShape shape = state.getShape(level, pos);
+            if (shape.isEmpty()) {
+                aabb = new AABB(pos);
+            } else {
+                aabb = shape.bounds().move(pos);
+            }
+        }
+
+        beAABBCache.put(beId, aabb);
+        return aabb;
+    }
+
+    private int getQueryFrequency(BlockEntity blockEntity) {
+        BlockPos pos = blockEntity.getBlockPos();
+        double dx = pos.getX() + 0.5 - cachedCamX;
+        double dy = pos.getY() + 0.5 - cachedCamY;
+        double dz = pos.getZ() + 0.5 - cachedCamZ;
         double distSq = dx * dx + dy * dy + dz * dz;
 
         if (distSq < DISTANCE_NEAR_SQ) {
@@ -331,35 +373,22 @@ public class HardwareOcclusionCuller implements IEntityCuller {
     }
 
     @Override
-    public boolean shouldCull(Entity entity, Camera camera) {
+    public boolean shouldCull(BlockEntity blockEntity, Camera camera) {
         if (!enabled) {
             return false;
         }
 
-        if (entity instanceof Player) {
-            return false;
-        }
-        if (entity.isCurrentlyGlowing()) {
-            return false;
-        }
-        if (entity.isPassenger()) {
-            return false;
-        }
-        if (entity == camera.getEntity()) {
-            return false;
-        }
+        long beId = blockEntity.getBlockPos().asLong();
 
-        int entityId = entity.getId();
-
-        if (lastFrameVisible.containsKey(entityId)) {
-            int updated = lastFrameUpdated.getOrDefault(entityId, frameCounter);
+        if (lastFrameVisible.containsKey(beId)) {
+            int updated = lastFrameUpdated.getOrDefault(beId, frameCounter);
             if (frameCounter - updated > VISIBILITY_STALE_FRAMES) {
-                lastFrameVisible.remove(entityId);
-                lastFrameUpdated.remove(entityId);
-                entityLastQueriedFrame.remove(entityId);
+                lastFrameVisible.remove(beId);
+                lastFrameUpdated.remove(beId);
+                beLastQueriedFrame.remove(beId);
                 return false;
             }
-            boolean visible = lastFrameVisible.get(entityId);
+            boolean visible = lastFrameVisible.get(beId);
             return !visible;
         }
 
@@ -386,7 +415,8 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         lastFrameVisible.clear();
         lastFrameUpdated.clear();
         querySubmitFrame.clear();
-        entityLastQueriedFrame.clear();
+        beLastQueriedFrame.clear();
+        beAABBCache.clear();
         poolInitialized = false;
     }
 }

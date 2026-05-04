@@ -1,6 +1,10 @@
 package me.cipher.clab.culling;
 
 import me.cipher.clab.Constants;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.world.level.BlockGetter;
+import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -28,11 +32,11 @@ public final class CullerManager {
         Constants.LOG.info("Registered culler: {}", id);
     }
 
-    public static boolean shouldCull(net.minecraft.world.level.BlockGetter level,
-                                     net.minecraft.world.level.block.state.BlockState state,
-                                     net.minecraft.core.BlockPos pos,
-                                     net.minecraft.core.Direction direction,
-                                     net.minecraft.core.BlockPos neighbor) {
+    public static boolean shouldCull(BlockGetter level,
+                                     BlockState state,
+                                     BlockPos pos,
+                                     Direction direction,
+                                     BlockPos neighbor) {
         List<ICuller> view = immutableView;
         for (ICuller culler : view) {
             if (culler.isEnabled() && culler.shouldCull(level, state, pos, direction, neighbor)) {

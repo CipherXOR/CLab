@@ -8,15 +8,25 @@
     "${mod_author}"
   ],
   "contact": {
-    "sources": "https://github.com/CipherXOR/CLab"
+    "homepage" : "https://github.com/CipherXOR/CLab",
+    "sources": "https://github.com/CipherXOR/CLab",
+    "issues" : "https://github.com/CipherXOR/CLab/issues"
   },
   "license": "${license}",
-  "icon": "clab.png",
+  "icon": "icon.png",
   "environment": "*",
   "entrypoints": {
     "main": [
       "me.cipher.clab.Clab"
     ]
+  },
+  "custom" : {
+    "modmenu" : {
+      "links" : {
+        "modmenu.discord" : "https://discord.gg/jCjxSZ6C",
+        "modmenu.modrinth" : "https://modrinth.com/mod/clab"
+      }
+    }
   },
   "mixins": [
     "clab.mixins.json",
