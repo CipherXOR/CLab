@@ -95,7 +95,6 @@ public class MixinLevelRenderer {
         PoseStack modelViewStack = RenderSystem.getModelViewStack();
         modelViewStack.pushPose();
         modelViewStack.mulPoseMatrix(poseStack.last().pose());
-        RenderSystem.applyModelViewMatrix();
         try {
             ClientClass.HARDWARE_OCCLUSION_CULLER.beginQueryBatch();
             try {
@@ -134,7 +133,6 @@ public class MixinLevelRenderer {
         PoseStack modelViewStack = RenderSystem.getModelViewStack();
         modelViewStack.pushPose();
         modelViewStack.mulPoseMatrix(poseStack.last().pose());
-        RenderSystem.applyModelViewMatrix();
         try {
             ClientClass.HARDWARE_OCCLUSION_BE_CULLER.beginQueryBatch();
             try {
