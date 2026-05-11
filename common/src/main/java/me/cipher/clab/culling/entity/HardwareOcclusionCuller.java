@@ -193,11 +193,12 @@ public class HardwareOcclusionCuller implements IEntityCuller {
         cachedShader = GameRenderer.getPositionShader();
         cachedProjMatrix = RenderSystem.getProjectionMatrix();
         if (cachedShader != null) {
+            ProgramManager.glUseProgram(cachedShader.getId());
+            RenderSystem.applyModelViewMatrix();
             if (cachedShader.PROJECTION_MATRIX != null) {
                 cachedShader.PROJECTION_MATRIX.set(cachedProjMatrix);
                 cachedShader.PROJECTION_MATRIX.upload();
             }
-            ProgramManager.glUseProgram(cachedShader.getId());
         }
     }
 
