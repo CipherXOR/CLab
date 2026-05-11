@@ -4,6 +4,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import me.cipher.clab.ClientClass;
 import net.minecraft.client.Camera;
+import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.LevelRenderer;
@@ -22,6 +23,9 @@ public class MixinLevelRenderer {
 
     @Shadow
     private ClientLevel level;
+
+    @Shadow
+    private Frustum cullingFrustum;
 
     @Inject(
             method = "renderLevel",
@@ -99,6 +103,9 @@ public class MixinLevelRenderer {
             ClientClass.HARDWARE_OCCLUSION_CULLER.beginQueryBatch();
             try {
                 for (Entity entity : this.level.entitiesForRendering()) {
+                    if (this.cullingFrustum != null && !this.cullingFrustum.isVisible(entity.getBoundingBox())) {
+                        continue;
+                    }
                     ClientClass.HARDWARE_OCCLUSION_CULLER.submitQuery(entity);
                 }
             } finally {
@@ -136,7 +143,7 @@ public class MixinLevelRenderer {
         try {
             ClientClass.HARDWARE_OCCLUSION_BE_CULLER.beginQueryBatch();
             try {
-                ClientClass.HARDWARE_OCCLUSION_BE_CULLER.submitAllPendingQueries();
+                ClientClass.HARDWARE_OCCLUSION_BE_CULLER.submitAllPendingQueries(this.cullingFrustum);
             } finally {
                 ClientClass.HARDWARE_OCCLUSION_BE_CULLER.endQueryBatch();
             }

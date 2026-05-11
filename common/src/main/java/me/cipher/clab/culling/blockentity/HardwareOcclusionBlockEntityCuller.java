@@ -17,6 +17,7 @@ import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.objects.ObjectIterator;
 import me.cipher.clab.Constants;
 import net.minecraft.client.Camera;
+import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.GameRenderer;
 import net.minecraft.client.renderer.ShaderInstance;
@@ -248,13 +249,17 @@ public class HardwareOcclusionBlockEntityCuller implements IBlockEntityCuller {
         GlStateManager._enableCull();
     }
 
-    public void submitAllPendingQueries() {
+    public void submitAllPendingQueries(Frustum frustum) {
         if (!enabled || !poolInitialized || renderedBlockEntities.isEmpty()) {
             return;
         }
         RenderSystem.assertOnRenderThread();
 
         for (BlockEntity blockEntity : renderedBlockEntities) {
+            AABB aabb = getBlockEntityAABB(blockEntity);
+            if (frustum != null && !frustum.isVisible(aabb)) {
+                continue;
+            }
             submitQueryInternal(blockEntity);
         }
         renderedBlockEntities.clear();
