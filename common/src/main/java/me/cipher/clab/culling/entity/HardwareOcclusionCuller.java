@@ -259,6 +259,10 @@ public class HardwareOcclusionCuller implements IEntityCuller {
             aabb = entity.getBoundingBox();
         }
 
+        if (aabb.minX == aabb.maxX || aabb.minY == aabb.maxY || aabb.minZ == aabb.maxZ) {
+            return;
+        }
+
         GL33C.glBeginQuery(GL_SAMPLES_PASSED, queryId);
         renderBoundingBoxOcclusion(aabb);
         GL33C.glEndQuery(GL_SAMPLES_PASSED);
