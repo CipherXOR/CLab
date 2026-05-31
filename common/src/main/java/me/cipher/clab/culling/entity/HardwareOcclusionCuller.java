@@ -75,7 +75,6 @@ public class HardwareOcclusionCuller implements IEntityCuller {
     public void ensurePool() {
         if (poolInitialized) {
             return;
-       
         }
         RenderSystem.assertOnRenderThread();
         growPool();

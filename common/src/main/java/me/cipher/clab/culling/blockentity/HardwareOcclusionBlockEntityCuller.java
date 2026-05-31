@@ -49,6 +49,7 @@ public class HardwareOcclusionBlockEntityCuller implements IBlockEntityCuller {
     private final Long2IntOpenHashMap lastFrameUpdated = new Long2IntOpenHashMap();
     private final Long2IntOpenHashMap querySubmitFrame = new Long2IntOpenHashMap();
     private final Long2IntOpenHashMap beLastQueriedFrame = new Long2IntOpenHashMap();
+    private static final int MAX_AABB_CACHE_SIZE = 8192;
     private final Long2ObjectOpenHashMap<AABB> beAABBCache = new Long2ObjectOpenHashMap<>();
 
     private final LongArrayList readyBeIds = new LongArrayList();
@@ -246,6 +247,11 @@ public class HardwareOcclusionBlockEntityCuller implements IBlockEntityCuller {
             return;
         }
 
+        AABB aabb = getBlockEntityAABB(blockEntity);
+        if (aabb.hasNaN()) {
+            return;
+        }
+
         int frequency = getQueryFrequency(blockEntity);
         boolean wasInvisible = lastFrameVisible.containsKey(beId) && !lastFrameVisible.get(beId);
         if (wasInvisible) {
@@ -267,12 +273,6 @@ public class HardwareOcclusionBlockEntityCuller implements IBlockEntityCuller {
             return;
         }
         int queryId = queryIdObj;
-
-        AABB aabb = getBlockEntityAABB(blockEntity);
-        if (aabb.hasNaN()) {
-            availableQueries.add(queryId);
-            return;
-        }
 
         GL33C.glBeginQuery(GL_SAMPLES_PASSED, queryId);
         renderBoundingBoxOcclusion(aabb);
@@ -305,6 +305,9 @@ public class HardwareOcclusionBlockEntityCuller implements IBlockEntityCuller {
             }
         }
 
+        if (beAABBCache.size() > MAX_AABB_CACHE_SIZE) {
+            beAABBCache.clear();
+        }
         beAABBCache.put(beId, aabb);
         return aabb;
     }
