@@ -9,7 +9,9 @@
     "MixinBlock",
     "MixinBlockEntityRenderDispatcher",
     "MixinEntityRenderDispatcher",
-    "MixinLevelRenderer"
+    "MixinEntityRenderer",
+    "MixinLevelRenderer",
+    "MixinLivingEntityRenderer"
   ],
   "server": [],
   "injectors": {

@@ -3,6 +3,7 @@ package me.cipher.clab.mixin;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import me.cipher.clab.ClientClass;
+import me.cipher.clab.culling.entity.EntityCullingState;
 import net.minecraft.client.Camera;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -42,6 +43,7 @@ public class MixinLevelRenderer {
             Matrix4f projectionMatrix,
             CallbackInfo ci
     ) {
+        EntityCullingState.clear();
         ClientClass.HARDWARE_OCCLUSION_CULLER.ensurePool();
         ClientClass.HARDWARE_OCCLUSION_BE_CULLER.ensurePool();
     }
